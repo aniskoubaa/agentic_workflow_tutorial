@@ -1,3 +1,7 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Build an Agent, Stage by Stage</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -113,6 +117,11 @@ pre.mermaid{background:var(--surface);color:var(--ink);border:1px solid var(--li
   .mobilenav select{width:100%;font:500 15px var(--sans);padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 }
 @media (prefers-reduced-motion:no-preference){ .page{animation:fade .2s ease-out} @keyframes fade{from{opacity:.4}to{opacity:1}} }
+pre.ex{margin:6px 0 0;padding:8px 10px;font-size:12px}
+table.ref{table-layout:fixed;width:100%}
+table.ref th:first-child,table.ref td:first-child{width:36%}
+table.ref td code{white-space:normal;overflow-wrap:anywhere}
+table.ref pre.ex code{white-space:pre}
 </style>
 
 <div class="mobilenav"><label for="mnav" hidden>Go to page</label><select id="mnav"></select></div>
@@ -1619,6 +1628,254 @@ function code(file, src){
   return `<div class="code"><div class="file">${esc(file)}</div><button class="copy" data-copy="${id}" type="button">Copy</button><pre><code id="${id}">${file==="layout"||file==="terminal"||file.endsWith(".json")||file.includes("jsonl")||file.startsWith(".")?esc(src):hl(src)}</code></pre></div>`;
 }
 
+/* Documentation tab: what the starter code does, and the API you use in the task.
+   starter: [name, what it does]   api: [code, what it does, example or ""] */
+const REFDOC = {
+1: {
+starter: [
+ ["<code>State</code> (app/state.py)", "The data that moves through the graph. It is a typed dictionary. In Stage 1 it has one field: <code>messages</code>, the list of chat messages."],
+ ["<code>Annotated[list[AnyMessage], add_messages]</code>", "Attaches the <code>add_messages</code> reducer to <code>messages</code>. When a node returns new messages, the reducer adds them to the end of the list. Without it, the new list would replace the old one."],
+ ["<code>total=False</code>", "Every field is optional. A node can return only the fields it changes."],
+ ["<code>call_model(state)</code> (app/nodes.py)", "A node. It sends all messages to the LLM and returns <code>{\"messages\": [reply]}</code>. It returns only the new message, not the whole state."],
+ ["<code>model</code> (app/llm.py)", "The chat model, created once with <code>init_chat_model</code>. Every node imports this same object."]
+],
+api: [
+ ["StateGraph(State)", "Creates an empty graph builder that uses your <code>State</code> class.", "builder = StateGraph(State)"],
+ ["builder.add_node(name, function)", "Adds a node. <code>name</code> is the label used in edges. <code>function</code> takes the state and returns an update (a dict).", "builder.add_node(\"model\", call_model)"],
+ ["builder.add_edge(a, b)", "After node <code>a</code> finishes, node <code>b</code> runs.", "builder.add_edge(\"model\", END)"],
+ ["START, END", "Two special node names. <code>START</code> is where every run begins. <code>END</code> is where it stops.", "from langgraph.graph import StateGraph, START, END"],
+ ["builder.compile()", "Checks the graph and turns it into a runnable object. You cannot run the builder itself.", "graph = builder.compile()"],
+ ["graph.invoke(inputs)", "Runs the graph once and returns the final state.", "graph.invoke({\"messages\": [HumanMessage(\"Hi\")]})"],
+ ["graph.get_graph().draw_mermaid()", "Returns the graph as Mermaid text. Paste it into your notes to show the diagram.", ""]
+]},
+2: {
+starter: [
+ ["<code>analysis</code>, <code>draft</code> (state fields)", "Two new text fields. <code>analyze</code> writes <code>analysis</code>. <code>generate</code> writes <code>draft</code>. They have no reducer, so each new value replaces the old one."],
+ ["<code>analyze(state)</code>", "Asks the model to restate the request in one sentence and list the facts it needs. Saves the result in <code>analysis</code>."],
+ ["<code>generate(state)</code>", "Writes a first answer, using <code>analysis</code> in its system prompt. Saves it in <code>draft</code>."],
+ ["<code>review(state)</code>", "Rewrites <code>draft</code> to be correct, polite, and under 120 words. Adds the final text to <code>messages</code> as an <code>AIMessage</code>."],
+ ["<code>SystemMessage</code>, <code>AIMessage</code>", "Message types from <code>langchain_core.messages</code>. A system message gives instructions to the model. An AI message is a model reply."]
+],
+api: [
+ ["builder.add_edge(\"analyze\", \"generate\")", "Chains two nodes. Use one <code>add_edge</code> for each arrow of the fixed path.", ""],
+ ["graph.stream(inputs, stream_mode=\"updates\")", "Runs the graph and yields one item after each node. Each item is <code>{node_name: update}</code>. Use it to see the state change step by step.", "for u in graph.stream(inputs, stream_mode=\"updates\"):\n    print(u)"],
+ ["reply.usage_metadata", "Token counts of one model call: <code>input_tokens</code>, <code>output_tokens</code>, <code>total_tokens</code>. Use it in the experiment.", ""]
+]},
+3: {
+starter: [
+ ["<code>Intent</code>", "A <code>Literal</code> type that lists the only allowed labels: policy, course_info, gpa, planning, other."],
+ ["<code>Classification</code>", "A Pydantic model with one field, <code>intent</code>. The model's answer must fit this shape."],
+ ["<code>classifier = model.with_structured_output(Classification)</code>", "A version of the model that returns a <code>Classification</code> object instead of free text."],
+ ["<code>classify(state)</code>", "A node. It classifies the latest request and writes the label to <code>intent</code>."],
+ ["<code>route_by_intent(state)</code>", "A routing function, not a node. It reads <code>intent</code> and returns it. LangGraph uses the returned value to pick the next node."]
+],
+api: [
+ ["builder.add_conditional_edges(source, route_fn, mapping)", "After <code>source</code>, LangGraph calls <code>route_fn(state)</code>. The returned key is looked up in <code>mapping</code> to find the next node.", "builder.add_conditional_edges(\"classify\", route_by_intent,\n    {\"gpa\": \"answer_gpa\", \"policy\": \"answer_policy\"})"],
+ ["model.with_structured_output(Schema)", "Makes the model return an object of your Pydantic class. Use it whenever code, not a human, reads the answer.", ""],
+ ["intent: str (state field)", "You add this field so <code>classify</code> can store its label.", ""]
+]},
+4: {
+starter: [
+ ["<code>@tool</code>", "Turns a Python function into a tool. The function name, the type hints, and the docstring become the tool schema the model reads."],
+ ["<code>calculate_gpa(courses)</code>", "Computes a GPA from credits and letter grades. The model cannot do this arithmetic reliably, so it calls the tool."],
+ ["<code>get_course(code)</code>", "Returns one course from <code>data/catalogue.json</code>, or an error dict if the code does not exist."],
+ ["<code>check_prerequisites(code, completed)</code>", "Returns <code>eligible</code> and the list of <code>missing</code> prerequisites."],
+ ["<code>TOOLS</code>", "The list of all tools. You pass it to <code>bind_tools</code> and to <code>ToolNode</code>."],
+ ["<code>model_with_tools = model.bind_tools(TOOLS)</code>", "A version of the model that knows the tool schemas and can ask to call them."],
+ ["<code>agent(state)</code>", "Calls <code>model_with_tools</code>. The reply is either text or a message with <code>tool_calls</code>."],
+ ["<code>final_answer(state)</code>", "Calls the plain model once more to write the answer from the tool results."]
+],
+api: [
+ ["ToolNode(TOOLS)", "A ready-made node. It runs every tool call in the last AI message and adds one <code>ToolMessage</code> per call.", "from langgraph.prebuilt import ToolNode, tools_condition\nbuilder.add_node(\"tools\", ToolNode(TOOLS))"],
+ ["tools_condition", "A ready-made routing function. It returns <code>\"tools\"</code> if the last message has tool calls, and <code>END</code> if not.", "builder.add_conditional_edges(\"agent\", tools_condition)"],
+ ["message.tool_calls", "A list of dicts with <code>name</code>, <code>args</code>, and <code>id</code>. Print it to see what the model asked for.", ""],
+ ["tool.invoke({...})", "Runs a tool directly, without the LLM. Use it in tests.", "calculate_gpa.invoke({\"courses\": [...]})"]
+]},
+5: {
+starter: [
+ ["<code>builder.add_edge(\"tools\", \"agent\")</code>", "The one edge that creates the loop. After the tools run, the model reads the results and decides again."],
+ ["<code>{\"recursion_limit\": 12}</code>", "The maximum number of steps in one run. It stops a loop that never ends."],
+ ["<code>GraphRecursionError</code>", "The error LangGraph raises when the limit is reached. The starter code catches it and returns a polite message."]
+],
+api: [
+ ["graph.invoke(inputs, {\"recursion_limit\": N})", "Sets the step budget for this run. The default is 25.", ""],
+ ["from langgraph.errors import GraphRecursionError", "Import the error so you can catch it with <code>try / except</code>.", ""],
+ ["create_agent(model, tools=TOOLS)", "From <code>langchain.agents</code>. Builds the same agent loop in one line. Use it only to compare with your own graph.", "from langchain.agents import create_agent\nagent = create_agent(model, tools=TOOLS)"]
+]},
+6: {
+starter: [
+ ["<code>InMemorySaver()</code>", "A checkpointer that keeps saved states in RAM. They are lost when the program stops."],
+ ["<code>build_graph(checkpointer=None)</code>", "The builder now accepts a checkpointer, so tests and <code>run.py</code> can pass different ones."],
+ ["<code>thread_id</code> in <code>config</code>", "The name of one conversation. The same thread_id continues it. A new one starts empty."],
+ ["<code>SqliteSaver.from_conn_string(\"memory.db\")</code>", "A checkpointer that saves to a file. Conversations survive a restart."],
+ ["<code>trim_messages(...)</code>", "Keeps only the last part of the history before calling the model, so long threads do not grow too expensive."]
+],
+api: [
+ ["builder.compile(checkpointer=saver)", "Turns on short-term memory. After this, every call needs a <code>thread_id</code>.", ""],
+ ["config = {\"configurable\": {\"thread_id\": \"t1\"}}", "Pass this as the second argument to <code>invoke</code> or <code>stream</code>.", "graph.invoke(inputs, config)"],
+ ["graph.get_state(config).values", "The current saved state of one thread.", ""],
+ ["graph.get_state_history(config)", "All saved states of one thread, newest first. Count them to see how many steps were saved.", "len(list(graph.get_state_history(config)))"]
+]},
+7: {
+starter: [
+ ["<code>Context</code> (dataclass)", "Holds <code>user_id</code>. Your app sets it at login. The model never sets it."],
+ ["<code>Profile</code>", "The facts kept about one user: programme, completed courses, preferences."],
+ ["<code>extractor</code>", "The model with structured output that returns an updated <code>Profile</code>."],
+ ["<code>load_profile(state, runtime)</code>", "Reads the user's profile from the store at the start of a run and puts it in <code>state[\"profile\"]</code>."],
+ ["<code>remember(state, runtime)</code>", "At the end of a run, asks the model to update the profile from the last messages, then saves it to the store."],
+ ["<code>runtime.store</code>, <code>runtime.context</code>", "A node that declares a <code>runtime</code> parameter gets the store and the context through it."]
+],
+api: [
+ ["StateGraph(State, context_schema=Context)", "Tells the graph which context class to expect.", ""],
+ ["builder.compile(checkpointer=..., store=InMemoryStore())", "Adds long-term memory next to the checkpointer.", "from langgraph.store.memory import InMemoryStore"],
+ ["graph.invoke(inputs, config, context=Context(user_id=\"s123\"))", "Passes the user identity for this run.", ""],
+ ["store.get(namespace, key) / store.put(namespace, key, value) / store.delete(namespace, key)", "Read, write, and delete one item. A namespace is a tuple, for example <code>(\"students\", user_id)</code>.", ""],
+ ["profile: dict (state field)", "You add this field so the agent can put the profile in its system prompt.", ""]
+]},
+8: {
+starter: [
+ ["<code>load_chunks(folder, size, overlap)</code>", "Reads every <code>.md</code> file in <code>data/policies/</code> and cuts it into overlapping pieces. Each piece keeps its file name as <code>source</code>."],
+ ["<code>store = InMemoryVectorStore(OpenAIEmbeddings(...))</code>", "Turns each piece into a vector and keeps it in memory for similarity search."],
+ ["<code>retrieve_docs(query, k=4)</code>", "Returns the 4 pieces closest to the query, each with its source."],
+ ["<code>search_policies(query)</code>", "The same search, as a tool. The agent can decide to call it."],
+ ["<code>retrieve(state)</code>", "A node. It searches with the last user message and stores the results in <code>retrieved_docs</code>."],
+ ["<code>grounded_answer(state)</code>", "A node. It puts the sources in the system prompt and tells the model to answer only from them, with a citation for every claim."]
+],
+api: [
+ ["retrieved_docs: list[dict] (state field)", "You add this field to hold the search results.", ""],
+ ["store.similarity_search(query, k=4)", "The vector-store call behind <code>retrieve_docs</code>.", ""],
+ ["TOOLS.append(search_policies)", "Adds retrieval as a tool, so you can compare workflow RAG with agentic RAG.", ""]
+]},
+9: {
+starter: [
+ ["<code>plan</code>, <code>past_steps</code> (state fields)", "<code>plan</code> is the list of steps still to do. <code>past_steps</code> is the list of (step, result) pairs already done. It uses the <code>operator.add</code> reducer, so results are added, not replaced."],
+ ["<code>Plan</code>, <code>Decision</code>", "Pydantic shapes for the planner's answer and the replanner's answer."],
+ ["<code>planner(state)</code>", "Splits the request into at most 6 steps and writes them to <code>plan</code>."],
+ ["<code>make_executor(react_graph)</code>", "Returns a node that runs the first step of the plan with your Stage 5 agent and adds the result to <code>past_steps</code>."],
+ ["<code>replanner(state)</code>", "Decides if the request is fully answered. If yes, it writes the final answer. If no, it writes the remaining steps."],
+ ["<code>should_continue(state)</code>", "A routing function. It returns <code>\"executor\"</code> while steps remain and <code>\"__end__\"</code> when the plan is empty."]
+],
+api: [
+ ["Annotated[list[...], operator.add]", "A reducer that joins the old list and the new list.", "import operator"],
+ ["react_graph = build_agent_graph()", "Compile your Stage 5 agent without a checkpointer and pass it to <code>make_executor</code>.", ""],
+ ["builder.add_conditional_edges(\"replanner\", should_continue)", "Loops back to <code>executor</code> or ends the run.", ""]
+]},
+10: {
+starter: [
+ ["<code>Complexity</code>", "A Pydantic shape with one field, <code>level</code>: simple, predictable, or complex."],
+ ["<code>build_workflow_graph()</code>, <code>build_planner_graph()</code>", "Functions you write that return compiled subgraphs from earlier stages."],
+ ["<code>builder.add_node(\"workflow\", workflow_graph)</code>", "A compiled graph can be used as a node. It reads and writes the same <code>State</code>."]
+],
+api: [
+ ["classify_complexity(state)", "A node you write. It uses structured output and stores the level in <code>state[\"complexity\"]</code>.", ""],
+ ["builder.add_conditional_edges(\"classify_complexity\", route_fn, mapping)", "Sends each level to its architecture: simple to <code>direct_answer</code>, predictable to <code>workflow</code>, complex to <code>planner</code>.", ""],
+ ["complexity: str (state field)", "You add this field for the classifier's result.", ""]
+]},
+11: {
+starter: [
+ ["<code>register_course(code, semester)</code>", "A mock write tool. It only returns a text. It does not change any real system."],
+ ["<code>WRITE_TOOLS</code>", "The names of tools that need a human's approval."],
+ ["<code>route_after_agent(state)</code>", "Replaces <code>tools_condition</code>. No tool calls: end. A write tool: go to <code>approval</code>. Only read tools: go to <code>tools</code>."],
+ ["<code>approval(state)</code>", "Pauses with <code>interrupt()</code> and shows the requested calls. On approve, goes to tools. On edit, replaces the tool arguments, then goes to tools. On reject, adds a rejection message and goes back to the agent."],
+ ["<code>run.py</code> loop", "While the result contains <code>__interrupt__</code>, it asks you for a decision and resumes the graph."]
+],
+api: [
+ ["interrupt(payload)", "Pauses the run and saves the state. When the graph resumes, it returns the value you sent. Needs a checkpointer and a <code>thread_id</code>.", "decision = interrupt({\"tool_calls\": calls})"],
+ ["result[\"__interrupt__\"][0].value", "The payload of the pause, read by the caller.", ""],
+ ["graph.invoke(Command(resume=value), config)", "Resumes the paused run on the same thread. The node runs again from its first line.", "graph.invoke(Command(resume={\"action\": \"approve\"}), config)"],
+ ["Command(goto=node, update={...})", "Returned by a node to choose the next node and update the state at the same time.", ""],
+ ["builder.add_node(\"approval\", approval, destinations=(\"tools\", \"agent\"))", "Tells LangGraph where <code>Command(goto=...)</code> can go, so the diagram shows those edges.", ""],
+ ["ToolMessage(text, tool_call_id=id)", "The answer to one tool call. Every tool call needs one before the model is called again.", ""]
+]},
+12: {
+starter: [
+ ["<code>PRICE_PER_1M</code>", "Price per million tokens. Check it for your model."],
+ ["<code>run_traced(graph, inputs, config, context, log)</code>", "Runs the graph with streaming and records nodes, tool calls, custom events, tokens, latency, cost, status, route, and answer. Adds one JSON line per run to <code>eval/traces.jsonl</code>."],
+ ["<code>get_stream_writer()</code> in a node", "Sends your own event (for example, how many documents were retrieved) to the stream."]
+],
+api: [
+ ["graph.stream(inputs, config, stream_mode=[\"updates\", \"custom\"])", "With a list of modes, each item is <code>(mode, chunk)</code>.", ""],
+ ["from langgraph.config import get_stream_writer", "Call <code>get_stream_writer()(dict)</code> inside a node to emit a custom event.", ""],
+ ["LANGSMITH_TRACING=true (in .env)", "Sends every run to LangSmith with no code change.", ""],
+ ["eval/summary.py", "A script you write. It reads <code>traces.jsonl</code> and prints the error rate, p50/p95 latency, mean cost, top tools, and routes.", ""]
+]},
+13: {
+starter: [
+ ["<code>eval/testset.jsonl</code>", "One test case per line: <code>id</code>, <code>input</code>, the expected <code>route</code>, the expected <code>tools</code>, and a <code>reference</code> answer."],
+ ["<code>Verdict</code>, <code>judge</code>", "An LLM judge that returns <code>correct</code> (true/false) and a <code>reason</code>."],
+ ["<code>judge_answer(question, reference, answer)</code>", "Asks the judge whether the answer agrees with the reference on every fact."],
+ ["<code>evaluate(version)</code>", "Runs every test case with <code>run_traced</code>, checks route, tools, extra calls, and correctness, and saves <code>eval/results_&lt;version&gt;.json</code>."]
+],
+api: [
+ ["evaluate(\"stage10\")", "Call it once per version and compare the summaries.", ""],
+ ["git tag", "Tag the commit of each version you evaluate, so every result can be reproduced.", ""],
+ ["langsmith.evaluate (optional)", "Runs the same comparison inside LangSmith.", ""]
+]},
+14: {
+starter: [
+ ["<code>INJECTION_PATTERNS</code>", "Simple text patterns of known attacks, checked before the LLM judge."],
+ ["<code>ALLOWED_TOOLS</code>", "Which tools each role may call."],
+ ["<code>PII</code>", "Patterns for student IDs and email addresses, to hide them in answers."],
+ ["<code>audit(event, **data)</code>", "Emits a security event to the stream, so it appears in your traces."],
+ ["<code>input_guard(state)</code>", "Checks the user message with the patterns, then with an LLM judge. Sets <code>safety_status</code> to <code>\"blocked\"</code> or <code>\"ok\"</code>."],
+ ["<code>tool_authorization(state)</code>", "If any requested tool is not allowed, answers every call with a denial, so nothing in that batch runs."],
+ ["<code>sanitize_tool_output(text)</code>", "Wraps retrieved text in <code>&lt;untrusted_data&gt;</code> tags, so the model treats it as data, not instructions."],
+ ["<code>output_guard(state)</code>", "Hides personal data in the final answer. It keeps the same message id, so the clean message replaces the original."]
+],
+api: [
+ ["safety_status: str (state field)", "You add this field so guards can report their result.", ""],
+ ["builder.add_conditional_edges(\"input_guard\", route_fn)", "Blocked requests go to a refusal node. Safe requests go to the agent.", ""],
+ ["Pydantic argument model", "Checks write-tool arguments before they run, for example that the course exists.", "class RegisterArgs(BaseModel):\n    code: str\n    semester: Literal[\"Fall\", \"Spring\", \"Summer\"]"],
+ ["eval/attacks.jsonl", "Your attack set. Run it before and after the guards.", ""]
+]},
+15: {
+starter: [
+ ["<code>MAX_RETRIES</code>", "How many times the agent may try again. It keeps the loop bounded."],
+ ["<code>Check</code>, <code>validator</code>", "An LLM check that returns <code>supported</code> and the list of <code>problems</code>."],
+ ["<code>validate(state)</code>", "Compares the answer with the evidence (tool results and retrieved documents). Writes <code>evaluation_score</code> and <code>critique</code>."],
+ ["<code>route_after_validate(state)</code>", "Supported: respond. Not supported and retries left: add a critique. No retries left: abstain."],
+ ["<code>add_critique(state)</code>", "Adds 1 to <code>retry_count</code> and tells the agent which claims were not supported."],
+ ["<code>abstain(state)</code>", "Returns an honest message instead of a guess."]
+],
+api: [
+ ["evaluation_score: float, critique: list[str], retry_count: int (state fields)", "You add these three fields. Set <code>retry_count</code> to 0 at the start of each request.", ""],
+ ["builder.add_conditional_edges(\"validate\", route_after_validate)", "Connects validation to respond, add_critique, or abstain.", ""],
+ ["builder.add_edge(\"add_critique\", \"agent\")", "Sends the agent back to try again.", ""]
+]},
+16: {
+starter: [
+ ["<code>config/v001.json</code>", "All values that the improvement loop may change: the agent prompt, router descriptions, <code>retrieval_k</code>, <code>max_retries</code>."],
+ ["<code>EDITABLE</code>", "The only fields a proposal may change. Tool code, allowlists, and guard rules are not in it."],
+ ["<code>ImproveState</code>", "The state of the improvement graph: base version, failures, proposal, scores, decision."],
+ ["<code>collect(state)</code>", "Reads the failed cases from the results of the base version."],
+ ["<code>propose(state)</code>", "Asks the model for one change to one editable field, with a reason. Rejects any other field."],
+ ["<code>test(state)</code>", "You complete it: write <code>config/candidate.json</code>, run the test set and the attack set, and return both score sets."],
+ ["<code>gate(state)</code>", "A routing function. It returns <code>\"approve\"</code> only if the change is better and not less safe."],
+ ["<code>approve(state)</code>", "Pauses with <code>interrupt()</code> so a human sees the change and the scores before deciding."],
+ ["<code>deploy(state)</code>", "You complete it: if approved, copy the candidate config to the next version file."]
+],
+api: [
+ ["build_graph(config)", "Your agent must read its prompts and settings from a config file, not from constants in the code.", ""],
+ ["builder.add_conditional_edges(\"test\", gate, {\"approve\": \"approve\", \"reject\": END})", "Only good changes reach a human.", ""],
+ ["builder.compile(checkpointer=InMemorySaver())", "Needed because <code>approve</code> uses <code>interrupt()</code>.", ""],
+ ["improve/log.jsonl", "One line per cycle: proposal, scores, gate result, human decision.", ""],
+ ["rollback(version)", "A function you write that makes an earlier config the active one again.", ""]
+]}
+};
+
+function refDoc(n){
+  const d=REFDOC[n]; if(!d) return "";
+  const rows=d.starter.map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join("");
+  const api=d.api.map(([c,v,ex])=>`<tr><td><code>${esc(c)}</code></td><td>${v}${ex?`<pre class="ex"><code>${esc(ex)}</code></pre>`:""}</td></tr>`).join("");
+  return `<h2>1. What the starter code does</h2>
+<p>Read this before you copy the code from the <b>Starter code</b> tab. You do not need to change these parts.</p>
+<div class="tablewrap"><table class="ref"><thead><tr><th>Item</th><th>What it does</th></tr></thead><tbody>${rows}</tbody></table></div>
+<h2>2. Code you will use in your task</h2>
+<p>These are the calls you write yourself in the <b>Your task</b> tab.</p>
+<div class="tablewrap"><table class="ref"><thead><tr><th>Code</th><th>What it does</th></tr></thead><tbody>${api}</tbody></table></div>
+${docsBox(n)}`;
+}
+
 /* ---------- pages ---------- */
 function docsBox(n){
   const list=DOCS[n]||[];
@@ -1637,7 +1894,7 @@ function objPanel(s){
 }
 function stagePage(s){
   const id="stage-"+String(s.n).padStart(2,"0");
-  const tabs=[["objective","Objective"],["concept","Concept"],["starter","Starter code"],["task","Your task"],["experiment","Experiment"],["tests","Tests"],["reflect","Reflect"]];
+  const tabs=[["objective","Objective"],["concept","Concept"],["starter","Starter code"],["docs","Documentation"],["task","Your task"],["experiment","Experiment"],["tests","Tests"],["reflect","Reflect"]];
   return { id, nav:s.title, num:String(s.n).padStart(2,"0"), group:s.m, render:()=>`
 <div class="eyebrow">Stage ${s.n} of 16 · ${MILESTONES[s.m].label}</div>
 <h1>${s.title}</h1>
@@ -1646,6 +1903,7 @@ function stagePage(s){
 <div class="panel" role="tabpanel" id="panel-objective" aria-labelledby="tab-objective">${objPanel(s)}</div>
 <div class="panel" role="tabpanel" id="panel-concept" aria-labelledby="tab-concept" hidden>${s.concept}${docsBox(s.n)}</div>
 <div class="panel" role="tabpanel" id="panel-starter" aria-labelledby="tab-starter" hidden>${s.starter()}</div>
+<div class="panel" role="tabpanel" id="panel-docs" aria-labelledby="tab-docs" hidden>${refDoc(s.n)}</div>
 <div class="panel" role="tabpanel" id="panel-task" aria-labelledby="tab-task" hidden>${s.task}<p>When done: <code>git commit -am "stage ${s.n}" &amp;&amp; git tag ${id}</code></p></div>
 <div class="panel" role="tabpanel" id="panel-experiment" aria-labelledby="tab-experiment" hidden>${s.experiment}</div>
 <div class="panel" role="tabpanel" id="panel-tests" aria-labelledby="tab-tests" hidden>${s.tests()}<p>Run with <code>pytest tests/ -q</code>. Earlier stages' tests must keep passing.</p></div>
