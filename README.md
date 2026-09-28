@@ -31,9 +31,27 @@ mai580-agent/
 
 ## Start
 
+Create a Python environment with **one** of the two options below.
+
+**Option A: conda** (Anaconda or Miniconda)
+
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+conda create -n mai580 python=3.11 -y   # create the environment once
+conda activate mai580                   # run this every time you open a new terminal
 pip install -r requirements.txt
+```
+
+**Option B: venv** (built into Python 3.10 or newer)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate               # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Then:
+
+```bash
 cp .env.example .env        # then add your OPENAI_API_KEY
 pytest                      # fails until you write build_graph() in app/graph.py
 python run.py
